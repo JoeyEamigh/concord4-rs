@@ -1,0 +1,20 @@
+[package]
+name = "concord4"
+version = "0.1.0"
+edition = "2021"
+authors = ["Joey Eamigh"]
+rust-version = "1.73"
+description = "A library to help communicated with the SuperBus Automation Module for the Concord4."
+repository = "https://github.com/JoeyEamigh/concord4-rs.git"
+documentation = "https://github.com/JoeyEamigh/concord4-rs"
+homepage = "https://github.com/JoeyEamigh/concord4-rs"
+keywords = ["concord4", "superbus automation module"]
+readme = "README.md"
+license = "MIT"
+
+[dependencies]
+futures = "0.3.28"
+tokio = { version = "1.32.0", features = ["full"] }
+tokio-serial = "5.4.4"
+tokio-util = { version = "0.7.9", features = ["full"] }
+tracing = "0.1.37"
