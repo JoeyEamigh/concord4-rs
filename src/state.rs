@@ -2,8 +2,10 @@ use std::{
   collections::BTreeMap,
   sync::{atomic::AtomicBool, Arc},
 };
-
 use tokio::sync::RwLock;
+
+#[cfg(feature = "json")]
+use serde::{Deserialize, Serialize};
 
 use crate::equipment::{PanelData, PartitionData, ZoneData};
 
@@ -35,8 +37,50 @@ impl Default for ConcordState {
 }
 
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "json", derive(Serialize, Deserialize), serde(rename_all = "camelCase"))]
 pub enum StateData {
   Panel(PanelData),
   Zone(ZoneData),
   Partition(PartitionData),
+}
+
+#[cfg(feature = "json")]
+impl StateData {
+  pub fn to_json(&self) -> Result<String, serde_json::Error> {
+    serde_json::to_string(&self)
+  }
+}
+
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "json", derive(Serialize, Deserialize), serde(rename_all = "camelCase"))]
+pub struct PublicState {
+  pub panel: PanelData,
+  pub zones: BTreeMap<String, ZoneData>,
+  pub partitions: BTreeMap<String, PartitionData>,
+
+  pub initialized: bool,
+}
+
+impl PublicState {
+  pub fn new(
+    panel: PanelData,
+    zones: BTreeMap<String, ZoneData>,
+    partitions: BTreeMap<String, PartitionData>,
+    initialized: bool,
+  ) -> Self {
+    Self {
+      panel,
+      zones,
+      partitions,
+
+      initialized,
+    }
+  }
+}
+
+#[cfg(feature = "json")]
+impl PublicState {
+  pub fn to_json(&self) -> Result<String, serde_json::Error> {
+    serde_json::to_string(&self)
+  }
 }

@@ -1,9 +1,7 @@
-use communication::{RecvMessage, SendableMessage};
-use equipment::{PanelData, PartitionData, ZoneData};
+use communication::{ListRequest, RecvMessage};
 use futures::stream::{SplitSink, SplitStream, StreamExt};
-use state::{ConcordState, StateData};
+use state::ConcordState;
 use std::{
-  collections::BTreeMap,
   str,
   sync::{atomic::AtomicBool, Arc},
   time::Duration,
@@ -11,8 +9,6 @@ use std::{
 use tokio_serial::{SerialPortBuilderExt, SerialStream};
 use tokio_util::codec::{Decoder, Framed};
 use tracing::{debug, error, info, trace, warn};
-
-use crate::communication::ListRequest;
 
 mod communication;
 mod consts;
@@ -22,40 +18,18 @@ mod serial;
 mod state;
 mod touchpad;
 
-#[derive(Debug, Clone)]
-pub struct PublicState {
-  pub panel: PanelData,
-  pub zones: BTreeMap<String, ZoneData>,
-  pub partitions: BTreeMap<String, PartitionData>,
-
-  pub initialized: bool,
-}
-
-impl PublicState {
-  fn new(
-    panel: PanelData,
-    zones: BTreeMap<String, ZoneData>,
-    partitions: BTreeMap<String, PartitionData>,
-    initialized: bool,
-  ) -> Self {
-    Self {
-      panel,
-      zones,
-      partitions,
-
-      initialized,
-    }
-  }
-}
+pub use communication::SendableMessage;
+pub use equipment::{PanelData, PartitionData, ZoneData};
+pub use state::{PublicState, StateData};
 
 pub struct Concord4 {
-  pub tx: tokio::sync::mpsc::Sender<SendableMessage>,
+  tx: tokio::sync::mpsc::Sender<SendableMessage>,
 
   state: ConcordState,
 
   reader_tx: tokio::sync::broadcast::Sender<StateData>,
   use_rx: Arc<AtomicBool>,
-  ready_tx: tokio::sync::mpsc::Sender<consts::CtrlFlow>,
+  ready_tx: Option<tokio::sync::mpsc::Sender<consts::CtrlFlow>>,
 
   _handles: Vec<tokio::task::JoinHandle<()>>,
 }
@@ -82,18 +56,19 @@ impl Concord4 {
     let (ready_tx, ready_rx) = tokio::sync::mpsc::channel(10);
     let (reader_tx, _) = tokio::sync::broadcast::channel(10);
 
-    let mut concord = Self {
+    let primary_concord = Self {
       tx: writer_tx,
       state: ConcordState::new(),
 
       reader_tx: reader_tx.clone(),
       use_rx: Arc::new(AtomicBool::new(false)),
-      ready_tx,
+      ready_tx: Some(ready_tx),
 
       _handles: vec![],
     };
+    let mut concord = primary_concord.clone();
 
-    let (writer, reader) = concord.clone().framed(port).split();
+    let (writer, reader) = primary_concord.framed(port).split();
 
     let reader_state = concord.clone();
     let writer_state = concord.clone();
@@ -104,12 +79,7 @@ impl Concord4 {
       writer_state.writer_listen(writer, writer_rx, ready_rx).await
     }));
 
-    let data_init_tx = concord.tx.clone();
-    concord._handles.push(tokio::spawn(async move {
-      let _ = data_init_tx.try_send(SendableMessage::DynamicDataRefresh);
-      tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-      let _ = data_init_tx.try_send(SendableMessage::List(ListRequest::AllData));
-    }));
+    let _ = concord.tx.try_send(SendableMessage::List(ListRequest::AllData));
 
     concord
   }
@@ -118,16 +88,21 @@ impl Concord4 {
     while !self.state.initialized.load(std::sync::atomic::Ordering::Relaxed) {
       tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
+    let _ = self.tx.try_send(SendableMessage::DynamicDataRefresh);
   }
 
   pub async fn block(&self) {
     tokio::signal::ctrl_c().await.unwrap();
   }
 
-  pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<StateData> {
+  pub fn subscribe(
+    &self,
+  ) -> (
+    tokio::sync::mpsc::Sender<SendableMessage>,
+    tokio::sync::broadcast::Receiver<StateData>,
+  ) {
     self.use_rx.store(true, std::sync::atomic::Ordering::Relaxed);
-
-    self.reader_tx.subscribe()
+    (self.tx.clone(), self.reader_tx.subscribe())
   }
 
   pub async fn data(&self) -> PublicState {
@@ -164,7 +139,7 @@ impl Concord4 {
             debug!("updating zone: {:?}", data);
 
             let mut zones = self.state.zones.write().await;
-            let zone_id = data.compute_id();
+            let zone_id = data.id.clone();
             zones.insert(zone_id.clone(), data);
 
             self.send_to_reader_tx(&reader_tx, StateData::Zone(zones.get(&zone_id).unwrap().to_owned()));
@@ -174,7 +149,7 @@ impl Concord4 {
 
             let mut zones = self.state.zones.write().await;
 
-            let zone_id = data.compute_id();
+            let zone_id = data.id.clone();
             if let Some(zone) = zones.get_mut(&zone_id) {
               zone.zone_status = data.zone_status;
 
@@ -186,7 +161,7 @@ impl Concord4 {
 
             let mut partitions = self.state.partitions.write().await;
 
-            let partition_id = data.compute_id();
+            let partition_id = data.id.clone();
             partitions.insert(partition_id.clone(), data);
 
             self.send_to_reader_tx(
@@ -198,7 +173,7 @@ impl Concord4 {
             debug!("updating partition arming level: {:?}", data);
 
             let mut partitions = self.state.partitions.write().await;
-            let partition_id = data.compute_id();
+            let partition_id = data.id.clone();
 
             if let Some(partition) = partitions.get_mut(&partition_id) {
               partition.arming_level = data.arming_level;
@@ -271,7 +246,7 @@ impl Clone for Concord4 {
 
       reader_tx: self.reader_tx.clone(),
       use_rx: self.use_rx.clone(),
-      ready_tx: self.ready_tx.clone(),
+      ready_tx: None,
 
       _handles: vec![],
     }

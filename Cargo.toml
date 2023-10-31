@@ -14,7 +14,13 @@ license = "MIT"
 
 [dependencies]
 futures = "0.3.28"
+serde = { version = "1.0.190", optional = true, features = ["derive"] }
+serde_json = { version = "1.0.108", optional = true }
 tokio = { version = "1.32.0", features = ["full"] }
 tokio-serial = "5.4.4"
 tokio-util = { version = "0.7.9", features = ["full"] }
 tracing = "0.1.37"
+
+[features]
+default = []
+json = ["dep:serde", "dep:serde_json"]

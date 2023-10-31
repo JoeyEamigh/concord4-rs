@@ -1,8 +1,8 @@
 # concord4-rs
 
-A Rust library allowing access to the data provided by apcupsd.
+A Rust library to interact with the Concord4 Alarm Panel via an Interlogix Superbus 2000 serial connection.
 
-## Installation
+## Installation (not published yet)
 
 ```sh
 cargo add concord4
@@ -50,7 +50,12 @@ pub enum StateData {
   Partition(PartitionData),
 }
 
-let rx: tokio::sync::broadcast::Receiver<StateData> = concord.subscribe();
+pub enum SendableMessage {
+  List(ListRequest),
+  DynamicDataRefresh,
+}
+
+let (tx: tokio::sync::mpsc::Sender<SendableMessage>, rx: tokio::sync::broadcast::Receiver<StateData>) = concord.subscribe();
 
 while let Ok(data) = rx.recv().await {
   match data {
@@ -68,6 +73,10 @@ while let Ok(data) = rx.recv().await {
 ```
 
 This can be used to send partial data to a websocket, for example.
+
+## Features
+
+- `json` - enables serde_json support for the data structures - you can then use .to_json()
 
 ## Examples
 

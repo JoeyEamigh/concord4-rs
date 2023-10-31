@@ -76,7 +76,13 @@ impl Decoder for Concord4 {
         warn!("recv: NAK");
       }
 
-      if self.ready_tx.try_send(consts::CtrlFlow::from(*ctrl)).is_err() {
+      if self
+        .ready_tx
+        .as_ref()
+        .expect("decoder on wrong thread")
+        .try_send(consts::CtrlFlow::from(*ctrl))
+        .is_err()
+      {
         error!("failed to send ack");
       }
 

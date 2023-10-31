@@ -1,6 +1,10 @@
 use crate::decode;
 
+#[cfg(feature = "json")]
+use serde::{Deserialize, Serialize};
+
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "json", derive(Serialize, Deserialize), serde(rename_all = "lowercase"))]
 pub enum ZoneStatus {
   Normal,
   Tripped,
@@ -26,6 +30,7 @@ impl From<u8> for ZoneStatus {
 }
 
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "json", derive(Serialize, Deserialize), serde(rename_all = "lowercase"))]
 pub enum ZoneType {
   Hardwired,
   RF,
@@ -44,7 +49,9 @@ impl From<u8> for ZoneType {
 }
 
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "json", derive(Serialize, Deserialize), serde(rename_all = "camelCase"))]
 pub struct ZoneData {
+  pub id: String,
   pub partition_number: u8,
   pub area_number: u8,
   pub group_number: u8,
@@ -57,6 +64,7 @@ pub struct ZoneData {
 impl From<Vec<u8>> for ZoneData {
   fn from(data: Vec<u8>) -> Self {
     ZoneData {
+      id: format!("p{}-z{}", data[0], data[4]),
       partition_number: data[0],
       area_number: data[1],
       group_number: data[2],
@@ -68,14 +76,9 @@ impl From<Vec<u8>> for ZoneData {
   }
 }
 
-impl ZoneData {
-  pub fn compute_id(&self) -> String {
-    format!("p{}-z{}", self.partition_number, self.zone_number)
-  }
-}
-
 #[derive(Debug, Clone)]
 pub struct ZoneStatusData {
+  pub id: String,
   pub partition_number: u8,
   pub area_number: u8,
   pub zone_number: u8,
@@ -85,17 +88,12 @@ pub struct ZoneStatusData {
 impl From<Vec<u8>> for ZoneStatusData {
   fn from(data: Vec<u8>) -> Self {
     ZoneStatusData {
+      id: format!("p{}-z{}", data[0], data[3]),
       partition_number: data[0],
       area_number: data[1],
       zone_number: data[3],
       zone_status: ZoneStatus::from(data[4]),
     }
-  }
-}
-
-impl ZoneStatusData {
-  pub fn compute_id(&self) -> String {
-    format!("p{}-z{}", self.partition_number, self.zone_number)
   }
 }
 
@@ -122,7 +120,9 @@ impl From<u8> for PartitionArmingLevel {
 }
 
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "json", derive(Serialize, Deserialize), serde(rename_all = "camelCase"))]
 pub struct PartitionData {
+  pub id: String,
   pub partition_number: u8,
   pub area_number: u8,
   pub arming_level: ArmingLevel,
@@ -131,6 +131,7 @@ pub struct PartitionData {
 impl From<Vec<u8>> for PartitionData {
   fn from(data: Vec<u8>) -> Self {
     PartitionData {
+      id: format!("p{}", data[0]),
       partition_number: data[0],
       area_number: data[1],
       arming_level: ArmingLevel::from(PartitionArmingLevel::from(data[2])),
@@ -138,13 +139,8 @@ impl From<Vec<u8>> for PartitionData {
   }
 }
 
-impl PartitionData {
-  pub fn compute_id(&self) -> String {
-    format!("p{}", self.partition_number)
-  }
-}
-
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "json", derive(Serialize, Deserialize), serde(rename_all = "lowercase"))]
 pub enum PanelType {
   Concord,
   ConcordExpress,
@@ -165,6 +161,7 @@ impl From<u8> for PanelType {
 }
 
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "json", derive(Serialize, Deserialize), serde(rename_all = "camelCase"))]
 pub struct PanelData {
   pub panel_type: PanelType,
 }
@@ -186,6 +183,7 @@ impl From<Vec<u8>> for PanelData {
 }
 
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "json", derive(Serialize, Deserialize), serde(rename_all = "camelCase"))]
 pub enum ArmingLevel {
   ZoneTest,
   Off,
@@ -223,6 +221,7 @@ impl From<PartitionArmingLevel> for ArmingLevel {
 
 #[derive(Debug, Clone)]
 pub struct ArmingLevelData {
+  pub id: String,
   pub partition_number: u8,
   pub area_number: u8,
   pub arming_level: ArmingLevel,
@@ -231,16 +230,11 @@ pub struct ArmingLevelData {
 impl From<Vec<u8>> for ArmingLevelData {
   fn from(data: Vec<u8>) -> Self {
     ArmingLevelData {
+      id: format!("p{}", data[0]),
       partition_number: data[0],
       area_number: data[1],
       arming_level: ArmingLevel::from(data[4]),
     }
-  }
-}
-
-impl ArmingLevelData {
-  pub fn compute_id(&self) -> String {
-    format!("p{}", self.partition_number)
   }
 }
 
