@@ -8,7 +8,7 @@ use std::{
 };
 use tokio_serial::{SerialPortBuilderExt, SerialStream};
 use tokio_util::codec::{Decoder, Framed};
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 mod communication;
 mod consts;
@@ -140,9 +140,9 @@ impl Concord4 {
 
             let mut zones = self.state.zones.write().await;
             let zone_id = data.id.clone();
-            zones.insert(zone_id.clone(), data);
+            zones.insert(zone_id.clone(), data.clone());
 
-            self.send_to_reader_tx(&reader_tx, StateData::Zone(zones.get(&zone_id).unwrap().to_owned()));
+            self.send_to_reader_tx(&reader_tx, StateData::Zone(data));
           }
           RecvMessage::ZoneStatus(data) => {
             debug!("updating zone status: {:?}", data);
@@ -153,7 +153,7 @@ impl Concord4 {
             if let Some(zone) = zones.get_mut(&zone_id) {
               zone.zone_status = data.zone_status;
 
-              self.send_to_reader_tx(&reader_tx, StateData::Zone(zones.get(&zone_id).unwrap().to_owned()));
+              self.send_to_reader_tx(&reader_tx, StateData::Zone(zone.to_owned()));
             }
           }
           RecvMessage::PartitionData(data) => {
@@ -162,12 +162,9 @@ impl Concord4 {
             let mut partitions = self.state.partitions.write().await;
 
             let partition_id = data.id.clone();
-            partitions.insert(partition_id.clone(), data);
+            partitions.insert(partition_id.clone(), data.clone());
 
-            self.send_to_reader_tx(
-              &reader_tx,
-              StateData::Partition(partitions.get(&partition_id).unwrap().to_owned()),
-            );
+            self.send_to_reader_tx(&reader_tx, StateData::Partition(data));
           }
           RecvMessage::ArmingLevel(data) => {
             debug!("updating partition arming level: {:?}", data);
@@ -178,10 +175,7 @@ impl Concord4 {
             if let Some(partition) = partitions.get_mut(&partition_id) {
               partition.arming_level = data.arming_level;
 
-              self.send_to_reader_tx(
-                &reader_tx,
-                StateData::Partition(partitions.get(&partition_id).unwrap().to_owned()),
-              );
+              self.send_to_reader_tx(&reader_tx, StateData::Partition(partition.to_owned()));
             };
           }
           RecvMessage::EqptListDone => {
@@ -205,9 +199,11 @@ impl Concord4 {
   }
 
   fn send_to_reader_tx(&self, reader_tx: &tokio::sync::broadcast::Sender<StateData>, msg: StateData) {
-    if self.use_rx.load(std::sync::atomic::Ordering::Relaxed) && reader_tx.send(msg).is_err() {
-      error!("failed to send message");
+    if !self.use_rx.load(std::sync::atomic::Ordering::Relaxed) {
+      return;
     }
+
+    let _ = reader_tx.send(msg);
   }
 
   async fn writer_listen(
