@@ -80,4 +80,4 @@ This can be used to send partial data to a websocket, for example.
 
 ## Examples
 
-See my project [concord4-ha](https://github.com/JoeyEamigh/concord4-ha) for a full example of how to use this library. That project is a Home Assistant integration for the Concord4 alarm panel, using websockets to stream updates.
+See my project [concord4-ws](https://github.com/JoeyEamigh/concord4-ws) for a full example of how to use this library. That project is a full websocket server that can be used to interact with the alarm panel.
