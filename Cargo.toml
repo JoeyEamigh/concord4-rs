@@ -13,14 +13,19 @@ readme = "README.md"
 license = "MIT"
 
 [dependencies]
-futures = "0.3.28"
-serde = { version = "1.0.190", optional = true, features = ["derive"] }
-serde_json = { version = "1.0.108", optional = true }
-tokio = { version = "1.32.0", features = ["full"] }
+dashmap = "6.0.1"
+futures = "0.3.30"
+serde = { version = "1.0.204", optional = true, features = ["derive"] }
+serde_json = { version = "1.0.121", optional = true }
+thiserror = "1.0.63"
+tokio = { version = "1.39.2", features = ["sync", "macros"] }
 tokio-serial = "5.4.4"
-tokio-util = { version = "0.7.9", features = ["full"] }
-tracing = "0.1.37"
+tokio-util = { version = "0.7.11", features = ["codec"] }
+tracing = "0.1.40"
 
 [features]
 default = []
-json = ["dep:serde", "dep:serde_json"]
+json = ["dep:serde", "dep:serde_json", "dashmap/serde"]
+
+[package.metadata.docs.rs]
+all-features = true

@@ -252,3 +252,35 @@ pub fn decode_text_tokens(tokens: &[u8]) -> String {
 
   s
 }
+
+pub fn letter_from_representative_hex(hex: u8) -> char {
+  match hex {
+    0x01 => 'A',
+    0x02 => 'B',
+    0x03 => 'C',
+    0x04 => 'D',
+    0x05 => 'E',
+    0x06 => 'F',
+    0x07 => 'G',
+    0x08 => 'H',
+    0x09 => 'I',
+    0x10 => 'J',
+    0x11 => 'K',
+    0x12 => 'L',
+    0x13 => 'M',
+    0x14 => 'N',
+    0x15 => 'O',
+    0x16 => 'P',
+    0x17 => 'Q',
+    0x18 => 'R',
+    0x19 => 'S',
+    0x20 => 'T',
+    0x21 => 'U',
+    0x22 => 'V',
+    0x23 => 'W',
+    0x24 => 'X',
+    0x25 => 'Y',
+    0x26 => 'Z',
+    _ => ' ',
+  }
+}

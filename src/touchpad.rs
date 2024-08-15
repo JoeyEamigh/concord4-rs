@@ -1,6 +1,10 @@
 use crate::decode;
 
+#[cfg(feature = "json")]
+use serde::Serialize;
+
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "json", derive(Serialize), serde(rename_all = "camelCase"))]
 pub struct TouchpadDisplay {
   pub partition_number: u8,
   pub area_number: u8,

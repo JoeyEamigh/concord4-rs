@@ -1,15 +1,9 @@
-use communication::{ListRequest, RecvMessage};
-use futures::stream::{SplitSink, SplitStream, StreamExt};
-use state::ConcordState;
-use std::{
-  str,
-  sync::{atomic::AtomicBool, Arc},
-  time::Duration,
-};
-use tokio_serial::{SerialPortBuilderExt, SerialStream};
-use tokio_util::codec::{Decoder, Framed};
-use tracing::{debug, info, trace, warn};
+#![doc = include_str!("../README.md")]
 
+use serial::Serial;
+use tokio::sync::mpsc;
+
+mod commands;
 mod communication;
 mod consts;
 mod decode;
@@ -18,238 +12,182 @@ mod serial;
 mod state;
 mod touchpad;
 
-pub use communication::SendableMessage;
-pub use equipment::{PanelData, PartitionData, ZoneData};
-pub use state::{PublicState, StateData};
+pub use commands::{ArmLevel, ArmMode, ArmOptions, DisarmOptions, Keypress, ListRequest};
+pub use communication::{RecvMessage, SendableMessage};
+pub use equipment::{ArmingLevel, PanelData, PartitionData, ZoneData};
+pub use state::{ConcordState as ConcordStateInner, WrappedState as ConcordState};
 
+/// Struct representing a connection to a Concord4 panel.
+/// Contains the current state of the alarm panel and methods to interact with it.
+///
+/// call `Concord4::open` to create a new connection.
 pub struct Concord4 {
-  tx: tokio::sync::mpsc::Sender<SendableMessage>,
+  /// The current state of the server. The state is Send + Sync, so it can be shared between threads.
+  pub state: ConcordState,
 
-  state: ConcordState,
-
-  reader_tx: tokio::sync::broadcast::Sender<StateData>,
-  use_rx: Arc<AtomicBool>,
-  ready_tx: Option<tokio::sync::mpsc::Sender<consts::CtrlFlow>>,
-
-  _handles: Vec<tokio::task::JoinHandle<()>>,
+  // internal
+  serial: Serial,
 }
 
 impl Concord4 {
-  pub fn init(path: &str) -> Self {
-    use tokio_serial::SerialPort;
+  /// open a new connection to a Concord4 server
+  ///
+  /// # args
+  /// `path`: [&str] - the path to the serial port
+  ///
+  /// # returns
+  /// a new [Concord4] struct
+  ///
+  /// # example
+  /// ```no_run
+  /// let mut client = Concord4::open("/dev/ttyUSB0").await;
+  /// ```
+  pub async fn open(path: &str) -> Result<Self, ClientError> {
+    let state = ConcordState::default();
+    let serial = Serial::init(path).await?;
 
-    let port = tokio_serial::new(path, consts::BAUD_RATE)
-      .data_bits(consts::DATA_BITS)
-      .parity(consts::PARITY)
-      .timeout(Duration::from_millis(10))
-      .open_native_async()
-      .expect("Failed to open port");
-
-    info!("Receiving data on {} at 9600 baud:", path);
-
-    // must clear buffer because system won't know which message the ACKs are referring to
-    port
-      .clear(tokio_serial::ClearBuffer::All)
-      .expect("Failed to clear buffer");
-
-    let (writer_tx, writer_rx) = tokio::sync::mpsc::channel(100);
-    let (ready_tx, ready_rx) = tokio::sync::mpsc::channel(10);
-    let (reader_tx, _) = tokio::sync::broadcast::channel(10);
-
-    let primary_concord = Self {
-      tx: writer_tx,
-      state: ConcordState::new(),
-
-      reader_tx: reader_tx.clone(),
-      use_rx: Arc::new(AtomicBool::new(false)),
-      ready_tx: Some(ready_tx),
-
-      _handles: vec![],
-    };
-    let mut concord = primary_concord.clone();
-
-    let (writer, reader) = primary_concord.framed(port).split();
-
-    let reader_state = concord.clone();
-    let writer_state = concord.clone();
-    concord._handles.push(tokio::spawn(async move {
-      reader_state.reader_listen(reader, reader_tx).await
-    }));
-    concord._handles.push(tokio::spawn(async move {
-      writer_state.writer_listen(writer, writer_rx, ready_rx).await
-    }));
-
-    let _ = concord.tx.try_send(SendableMessage::List(ListRequest::AllData));
-
-    concord
+    Ok(Self { state, serial })
   }
 
-  pub async fn wait_ready(&self) {
-    while !self.state.initialized.load(std::sync::atomic::Ordering::Relaxed) {
-      tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+  /// send a raw command to the Concord4 panel
+  ///
+  /// # args
+  /// `command`: [SendableMessage] - the command to send
+  ///
+  /// # returns
+  /// an empty [Ok] if the command was sent successfully, or a [ClientError] if there was an error
+  ///
+  /// # example
+  /// ```no_run
+  /// client.send(SendableMessage::List(ListRequest::AllData)).await.expect("could not send command");
+  /// ```
+  pub async fn send(&mut self, message: SendableMessage) -> Result<(), ClientError> {
+    self.serial.tx.send(message).await.map_err(ClientError::Sender)
+  }
+
+  /// receive a message from the Concord4 panel
+  ///
+  /// uses a [futures::stream::Next] under the hood, so: \
+  /// creates a future that resolves to the next item in the stream
+  ///
+  /// # returns
+  /// an [Option] containing an [Ok] with a [RecvMessage] if a message was received, \
+  /// an [Option] containing an [Err] with a [ClientError] if there was an error, \
+  /// or [None] if the serial port was closed
+  ///
+  /// # example
+  /// ```no_run
+  /// let message = client.recv().await.expect("could not receive message");
+  /// ```
+  pub async fn recv(&mut self) -> Option<Result<RecvMessage, ClientError>> {
+    use futures::StreamExt;
+
+    let message = self.serial.next().await?;
+
+    if let Ok(message) = &message {
+      self.state.handle_result(message.clone());
     }
-    let _ = self.tx.try_send(SendableMessage::DynamicDataRefresh);
+
+    Some(message)
   }
 
-  pub async fn block(&self) {
-    tokio::signal::ctrl_c().await.unwrap();
-  }
-
-  pub fn subscribe(
-    &self,
-  ) -> (
-    tokio::sync::mpsc::Sender<SendableMessage>,
-    tokio::sync::broadcast::Receiver<StateData>,
-  ) {
-    self.use_rx.store(true, std::sync::atomic::Ordering::Relaxed);
-    (self.tx.clone(), self.reader_tx.subscribe())
-  }
-
-  pub async fn data(&self) -> PublicState {
-    let panel = self.state.panel.read().await;
-    let zones = self.state.zones.read().await;
-    let partitions = self.state.partitions.read().await;
-
-    PublicState::new(
-      panel.to_owned(),
-      zones.to_owned(),
-      partitions.to_owned(),
-      self.state.initialized.load(std::sync::atomic::Ordering::Relaxed),
-    )
-  }
-
-  async fn reader_listen(
-    &self,
-    mut reader: SplitStream<Framed<SerialStream, Concord4>>,
-    reader_tx: tokio::sync::broadcast::Sender<StateData>,
-  ) {
-    loop {
-      // https://github.com/rust-lang/rust/issues/53667 - merge if let chains for the love of god
-      if let Some(Ok(msg)) = reader.next().await {
-        match msg.clone() {
-          RecvMessage::PanelType(data) => {
-            debug!("updating panel type: {:?}", data);
-
-            let mut panel = self.state.panel.write().await;
-            panel.panel_type = data.panel_type;
-
-            self.send_to_reader_tx(&reader_tx, StateData::Panel(panel.to_owned()));
-          }
-          RecvMessage::ZoneData(data) => {
-            debug!("updating zone: {:?}", data);
-
-            let mut zones = self.state.zones.write().await;
-            let zone_id = data.id.clone();
-            zones.insert(zone_id.clone(), data.clone());
-
-            self.send_to_reader_tx(&reader_tx, StateData::Zone(data));
-          }
-          RecvMessage::ZoneStatus(data) => {
-            debug!("updating zone status: {:?}", data);
-
-            let mut zones = self.state.zones.write().await;
-
-            let zone_id = data.id.clone();
-            if let Some(zone) = zones.get_mut(&zone_id) {
-              zone.zone_status = data.zone_status;
-
-              self.send_to_reader_tx(&reader_tx, StateData::Zone(zone.to_owned()));
-            }
-          }
-          RecvMessage::PartitionData(data) => {
-            debug!("updating partition: {:?}", data);
-
-            let mut partitions = self.state.partitions.write().await;
-
-            let partition_id = data.id.clone();
-            partitions.insert(partition_id.clone(), data.clone());
-
-            self.send_to_reader_tx(&reader_tx, StateData::Partition(data));
-          }
-          RecvMessage::ArmingLevel(data) => {
-            debug!("updating partition arming level: {:?}", data);
-
-            let mut partitions = self.state.partitions.write().await;
-            let partition_id = data.id.clone();
-
-            if let Some(partition) = partitions.get_mut(&partition_id) {
-              partition.arming_level = data.arming_level;
-
-              self.send_to_reader_tx(&reader_tx, StateData::Partition(partition.to_owned()));
-            };
-          }
-          RecvMessage::EqptListDone => {
-            if !self.state.initialized.load(std::sync::atomic::Ordering::Relaxed) {
-              info!("state initialization complete - ready to go!");
-              self.state.initialized.store(true, std::sync::atomic::Ordering::Relaxed);
-            }
-          }
-          RecvMessage::SirenSync => {
-            trace!(target: "concord4::siren-sync", "recv unhandled: {:?}", msg);
-          }
-          RecvMessage::Touchpad(_) => {
-            trace!(target: "concord4::touchpad", "recv unhandled: {:?}", msg);
-          }
-          _ => {
-            trace!("recv unhandled: {:?}", msg);
-          }
-        }
+  /// arm the alarm
+  ///
+  /// # args
+  /// `options`: [ArmOptions] - the options for arming the alarm
+  ///
+  /// # returns
+  /// an empty [Ok] if the command was sent successfully, or a [ClientError] if there was an error
+  ///
+  /// # example
+  /// ```no_run
+  /// client.arm(ArmOptions {
+  ///   mode: ArmMode::Stay,
+  ///   code: [Keypress::One, Keypress::Two, Keypress::Three, Keypress::Four],
+  ///   level: Some(ArmLevel::Instant),
+  ///   partition: Some(1),
+  /// }).await.expect("could not arm alarm");
+  /// ```
+  pub async fn arm(&mut self, options: ArmOptions) -> Result<(), ClientError> {
+    let partition = options.partition.unwrap_or(1);
+    if let Some(partition_data) = self.state.partitions.get(&partition) {
+      if partition_data.arming_level != ArmingLevel::Off {
+        return Err(ClientError::Armed);
       }
     }
+
+    self.send(SendableMessage::Arm(options)).await
   }
 
-  fn send_to_reader_tx(&self, reader_tx: &tokio::sync::broadcast::Sender<StateData>, msg: StateData) {
-    if !self.use_rx.load(std::sync::atomic::Ordering::Relaxed) {
-      return;
-    }
-
-    let _ = reader_tx.send(msg);
+  /// disarm the alarm
+  ///
+  /// # args
+  /// `options`: [DisarmOptions] - the options for disarming the alarm
+  ///
+  /// # returns
+  /// an empty [Ok] if the command was sent successfully, or a [ClientError] if there was an error
+  ///
+  /// # example
+  /// ```no_run
+  /// client.disarm(DisarmOptions {
+  ///   code: [Keypress::One, Keypress::Two, Keypress::Three, Keypress::Four],
+  ///   partition: Some(1),
+  /// }).await.expect("could not disarm alarm");
+  /// ```
+  pub async fn disarm(&mut self, options: DisarmOptions) -> Result<(), ClientError> {
+    self.send(SendableMessage::Disarm(options)).await
   }
 
-  async fn writer_listen(
-    &self,
-    mut writer: SplitSink<Framed<SerialStream, Concord4>, SendableMessage>,
-    mut rx: tokio::sync::mpsc::Receiver<SendableMessage>,
-    mut ready_rx: tokio::sync::mpsc::Receiver<consts::CtrlFlow>,
-  ) {
-    use futures::SinkExt;
+  /// toggle the chime on the alarm
+  ///
+  /// # args
+  /// `partition`: [Option<u8>] - the partition to toggle the chime on, or None for partition 1
+  ///
+  /// # returns
+  /// an empty [Ok] if the command was sent successfully, or a [ClientError] if there was an error
+  ///
+  /// # example
+  /// ```no_run
+  /// client.toggle_chime(Some(1)).await.expect("could not toggle chime");
+  /// ```
+  pub async fn toggle_chime(&mut self, partition: Option<u8>) -> Result<(), ClientError> {
+    let partition = partition.unwrap_or(1);
 
-    while let Some(line) = rx.recv().await {
-      writer.send(line.clone()).await.unwrap();
-
-      match line {
-        SendableMessage::Ack => continue,
-        SendableMessage::Nak => continue,
-        _ => {
-          // wait for ack before continuing
-          if tokio::time::timeout(Duration::from_millis(2000), ready_rx.recv())
-            .await
-            .is_err()
-          {
-            warn!("timed out waiting for ack");
-          }
-        }
+    if let Some(partition_data) = self.state.partitions.get(&partition) {
+      if partition_data.arming_level != ArmingLevel::Off {
+        return Err(ClientError::Armed);
       }
     }
+
+    self.send(SendableMessage::ToggleChime(Some(partition))).await
   }
 }
 
-impl Clone for Concord4 {
-  fn clone(&self) -> Self {
-    Self {
-      tx: self.tx.clone(),
-      state: self.state.clone(),
-
-      reader_tx: self.reader_tx.clone(),
-      use_rx: self.use_rx.clone(),
-      ready_tx: None,
-
-      _handles: vec![],
-    }
-  }
-}
-
-pub enum Error {
-  Encoder,
-  Decoder,
+/// Error type for the Concord4 client
+#[derive(Debug, thiserror::Error)]
+pub enum ClientError {
+  /// An error denoting the alarm is armed but must be disarmed for this action
+  #[error("Alarm is armed; disarm first")]
+  Armed,
+  /// An error returned by the Encoder
+  #[error("Encoder error: {0}")]
+  Encoder(std::io::Error),
+  /// An error returned by the Decoder
+  #[error("Decoder error: {0}")]
+  Decoder(std::io::Error),
+  /// An error returned by the Sender
+  #[error("Sender error: {0}")]
+  Sender(#[from] mpsc::error::SendError<SendableMessage>),
+  /// An error returned by the Receiver
+  #[error("Receiver error: {0}")]
+  Receiver(std::io::Error),
+  /// An error returned by the Serial port
+  #[error("Serial port error: {0}")]
+  SerialPort(#[from] tokio_serial::Error),
+  /// A serial port error
+  #[error("Serial port closed")]
+  SerialPortClosed,
+  /// An unknown error
+  #[error("Unknown error: {0}")]
+  Unknown(String),
 }
