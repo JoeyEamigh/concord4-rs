@@ -501,16 +501,24 @@ impl From<u8> for CodeType {
 pub struct UserData {
   pub number: (u8, u8),
   pub user_type: CodeType,
-  pub code: (u8, u8, u8, u8),
+  pub code: Option<(u8, u8, u8, u8)>,
 }
 
 impl From<Vec<u8>> for UserData {
   fn from(data: Vec<u8>) -> Self {
-    UserData {
-      number: (data[0], data[1]),
-      user_type: CodeType::from(data[1]),
-      // the code is stored in BCD format
-      code: ((data[3] >> 4), data[3] & 0x0F, (data[4] >> 4), data[4] & 0x0F),
+    if data.len() > 2 {
+      UserData {
+        number: (data[0], data[1]),
+        user_type: CodeType::from(data[1]),
+        // the code is stored in BCD format
+        code: Some(((data[3] >> 4), data[3] & 0x0F, (data[4] >> 4), data[4] & 0x0F)),
+      }
+    } else {
+      UserData {
+        number: (data[0], data[1]),
+        user_type: CodeType::from(data[1]),
+        code: None,
+      }
     }
   }
 }

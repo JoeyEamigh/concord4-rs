@@ -19,6 +19,7 @@ pub type WrappedState = Arc<ConcordState>;
 #[derive(Debug, Clone, Default)]
 pub struct WrappedPanel(pub OnceLock<PanelData>);
 
+#[cfg(feature = "json")]
 impl Serialize for WrappedPanel {
   fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
     if let Some(panel) = self.0.get() {
